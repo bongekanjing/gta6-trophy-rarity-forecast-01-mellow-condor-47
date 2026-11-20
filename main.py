@@ -147,6 +147,32 @@ def epochs(hist):
     return out
 
 
+def fit_gamma(eps, i, min_count=3):
+    """Elasticity of trophy i's count in the population, over every epoch.
+
+    Regressing log(count) on log(N) through all the refreshes rather than only the
+    first and the last keeps the thin launch-night reads from setting the answer on
+    their own: an early epoch may hold 4 earners, where one more or one fewer moves
+    the ratio by 25%.  Returns (gamma, points used, residual sd).
+    """
+    pts = []
+    for e in eps:
+        c = e["counts"][i]
+        if c and c >= min_count and e["n"] > 0:
+            pts.append((math.log(e["n"]), math.log(c)))
+    if len(pts) < 2:
+        return None, len(pts), None
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    if max(xs) - min(xs) <= 1e-9:
+        return None, len(pts), None
+    b, a = fit(xs, ys)
+    res = [y - (a + b * x) for x, y in zip(xs, ys)]
+    dof = max(len(pts) - 2, 1)
+    sd = math.sqrt(sum(r * r for r in res) / dof)
+    return b, len(pts), sd
+
+
 def forecast_case(case):
     hist = case["history"]
     trophies = case["trophies"]
@@ -197,13 +223,15 @@ def forecast_case(case):
     # pooled value that the launch-night-to-now comparison measures (0.86: counts
     # grow nearly, but not quite, as fast as the population).
     g_pool = 0.86
+    g_resid = None
     if len(eps) >= 2:
         gs = []
         for i in range(len(trophies)):
-            c0 = eps[0]["counts"][i]
-            c1 = eps[-1]["counts"][i]
-            if c0 and c1 and c0 >= 3 and c1 > 0 and eps[-1]["n"] > eps[0]["n"]:
-                gs.append(math.log(c1 / c0) / math.log(eps[-1]["n"] / eps[0]["n"]))
+            gi, npts, gsd = fit_gamma(eps, i)
+            if gi is not None:
+                gs.append(gi)
+                if gsd is not None:
+                    g_resid = gsd if g_resid is None else (g_resid + gsd) / 2.0
         if gs:
             gs.sort()
             g_pool = max(0.55, min(1.02, gs[len(gs) // 2]))
@@ -224,16 +252,13 @@ def forecast_case(case):
             continue
 
         # gamma for this trophy
-        if len(eps) >= 2:
-            c0 = eps[0]["counts"][i]
-            c1 = eps[-1]["counts"][i]
-            if c0 and c1 and c0 >= 3 and c1 > 0 and eps[-1]["n"] > eps[0]["n"]:
-                gi = math.log(c1 / c0) / math.log(eps[-1]["n"] / eps[0]["n"])
-                # a thin count's exponent is noise: blend toward the pooled value
-                wi = 1.0 / (1.0 + c1 / 60.0)
-                gi = (1 - wi) * gi + wi * g_pool
-            else:
-                gi = g_pool
+        gi_fit, gi_pts, gi_sd = fit_gamma(eps, i)
+        if gi_fit is not None:
+            gi = gi_fit
+            # a thin count's exponent is noise: blend toward the pooled value
+            c1 = eps[-1]["counts"][i] or 0
+            wi = 1.0 / (1.0 + c1 / 60.0)
+            gi = (1 - wi) * gi + wi * g_pool
         else:
             gi = g_pool
         gi = max(0.0, min(1.06, gi))
@@ -256,7 +281,13 @@ def forecast_case(case):
 
         # ---- spread --------------------------------------------------------
         # The exponent's own error, how far N may run, and where a refresh lands.
-        sd_g = 0.10 if len(eps) >= 2 else 0.16
+        # The exponent's error is measured, not assumed: the residual of the fitted
+        # log-log line says how well the power law held over these refreshes, and a
+        # trophy whose count jumped around gets a wider band for it.
+        if gi_sd is not None and gi_pts >= 3:
+            sd_g = max(0.08, min(0.26, gi_sd))
+        else:
+            sd_g = 0.10 if len(eps) >= 2 else 0.16
         sd_n = 0.12 * math.sqrt(max(d_days, 0.0)) + (0.22 if span_h >= 1.5 else 0.0)
         sd_ref = 0.26 * math.sqrt(max(d_days, 0.0)) + (0.30 if span_h >= 1.5 else 0.10)
         sd = math.sqrt(sd_g * sd_g + sd_n * sd_n + sd_ref * sd_ref + rw * rw * 0.2)

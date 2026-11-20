@@ -41,6 +41,13 @@ doubles, so its rate is diluted nearly one-for-one. The story trophies sit
 between. That is why the platinum falls 20-fold while the tutorial stays at 100%,
 and it is the structure the practice cases alone cannot show.
 
+Each `gamma_i` is a regression of log count on log players tracked through every
+refresh the case's history holds, not a ratio of its first and last read. Launch
+night's reads hold four earners for the platinum: one more or one fewer moves that
+ratio by a quarter, so the end-to-end ratio lets noise set the exponent. The
+regression also yields its own residual, which is what the band uses for the
+exponent's error rather than a constant.
+
 ## The refresh
 
 The page is a step function. Exophase republishes its counts on its own schedule,
